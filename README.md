@@ -39,7 +39,7 @@ Supported switching to english layout if another one enabled before showing hydr
 Extra commands:
 - `f11` - shows missing paths
 - `f12` - shows free keys
-- `?`   - leads to showing helm with paths
+- `  ?` - shows helm with paths
 
 Also:
 - updates visit time for selected key/path 
