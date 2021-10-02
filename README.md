@@ -8,6 +8,7 @@ The `nav-nav` allows you to simplify quick navigation on paths based on
 Basic config:
 ``` elisp
 (use-package nav-nav
+  :quelpa (nav-nav :fetcher git :url "https://github.com/evjava/nav-nav.git")
   :config
   (setq nav-nav-file "<path-to-nav>")
   (global-set-key (kbd "s-s") 'nav-nav))
@@ -27,6 +28,7 @@ Basic config:
 Supported switching to english layout if another one enabled before showing hydra and switching back after (if `xkblayout-state` installed):
 ``` elisp
 (use-package nav-nav
+  :quelpa (nav-nav :fetcher git :url "https://github.com/evjava/nav-nav.git")
   :config
   (setq nav-nav-file "<path-to-nav>")
   (setq nav-nav-is-switch-layout t)
