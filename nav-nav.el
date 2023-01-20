@@ -1,8 +1,8 @@
 ;;; nav-nav.el --- Quick path navigation based on Hydra + Helm -*- coding: utf-8;
 
-;; Copyright (C) 2021 Eugene Vagin
+;; Copyright (C) 2021 Eugene Tagin
 
-;; Author: Eugene Vagin <evjava@yandex.ru>
+;; Author: Eugene Tagin <evjava@yandex.ru>
 ;; Created: 02 Oct 2021
 ;; Package-Requires: ((emacs "24.3") (bind-key "2.4"))
 ;; Keywords: navigation helm hydra
@@ -27,23 +27,44 @@
 (require 'helm)
 (require 'dash)
 
-(setq nav-nav-all-keys (-map #'char-to-string 
-                            (append 
-                             (cl-loop for i from 0 to 26 collect (+ ?a i))
-                             (cl-loop for i from 0 to 26 collect (+ ?A i))
-                             '(?! ?@ ?# ?$ ?% ?^ ?& ?* ?\( ?\) ?_ ?+)
-                             '(?0 ?1 ?2 ?3 ?4 ?5 ?6 ?7 ?8 ?9))))
+(setq
+ nav-nav-all-keys
+ (-map #'char-to-string
+       (cl-flet ((chars (ch-from cnt) (cl-loop for i from ch-from to (+ ch-from cnt) collect i)))
+         (append  (chars ?a 26) (chars ?A 26) (chars ?0 9)
+                  '(?! ?@ ?# ?$ ?% ?^ ?& ?* ?\( ?\) ?_ ?+)))))
+
+(setq
+ nav-nav-actions-map-default
+ '((1 . (lambda (path)
+          (cond
+           ((string-prefix-p "*" path) (switch-to-buffer path))
+           (t (progn
+                (find-file path)
+                (if (eq major-mode 'dired-mode) (revert-buffer)))))))
+   (4 . (lambda (path)
+          (let* ((directory
+                  (if (file-directory-p path) path (file-name-directory path))))
+            (insert (concat "cd " directory))
+            (comint-send-input))))))
 
 (defvar nav-nav-file nil 
-  "the file of the kind <\n'(\n  (\"key1\" \"path1\")\n  (\"key2\" \"path2\")\n...\n))\n> for quick navigation")
+  "File with list of key-path pairs for quick navigation")
 (defvar nav-nav-en-layout "us" "english layout")
 (defvar nav-nav-is-switch-keyboard nil
   "Switches to english layout before showing hydra and switches back after if `xkblayout-state` installed (2 layouts expected)")
+(defvar nav-nav-actions-map nav-nav-actions-map-default
+  "Actions for passed arguments")
+(defvar nav-nav-default-action #'find-file
+  "Default action")
+
+(defun nav-nav-paths (path)
+  (with-temp-buffer
+    (insert-file-contents path)
+    (read (buffer-string))))
 
 (defun nav-nav (&optional arg)
-  """ Shows hydra which 
-  - if arg not passed: navigates to specific path
-  - if arg     passed: inserts and send path (may be suitable for shell)
+  """ Shows hydra
   Extra commands:
   - `f11` - shows missing paths
   - `f12` - shows free keys
@@ -54,100 +75,102 @@
   (interactive "p")
   (if (null nav-nav-file)
       (message "`nav-nav-file` not installed!")
-    (nav-nav-0 arg)))
+    (nav-nav-0 (or arg 1))))
 
 (defun nav-nav-0 (arg)
-  (let* ((commands (nav-nav-commands-from-path nav-nav-file))
-         (key-commands (--filter (not (null (car it))) commands))
-         (shell-go (not (eq arg 1)))
+  (let* ((commands (nav-nav-paths nav-nav-file))
+         (key-commands-0 (--filter (not (null (car it))) commands))
+         (string>> (lambda (s1 s2) (if (null s1) nil (string> s1 s2))))
+         (key-commands-1 (-sort (-on string>> #'caddr) key-commands-0))
+         (key-commands (--map (cons (car it) (cadr it)) key-commands-1))
          (switch (and nav-nav-is-switch-layout (not (nav-nav-is-en-layout)))))
-    (if switch (nav-nav-next-layout))
+    (when switch
+      (nav-nav-next-layout))
     (call-interactively
      (eval `(defhydra nav-nav-hydra (:columns 2 :exit t :foreign-keys warn)
               "nav-nav"
-              ,@(mapcar (lambda (c) (list (car c) `(nav-nav-navigate-callback ,(cdr c) ,shell-go ,switch) (cdr c))) key-commands)
-              ("?" (nav-nav-navigate-helm ,shell-go ,switch) "helm")
+              ,@(mapcar (lambda (c) (list (car c) `(nav-nav-navigate-callback ,(car c) ,(cdr c) ,arg ,switch) (cdr c))) key-commands)
+              ("?" (nav-nav-navigate-helm ,arg ,switch) "helm")
               ("<f11>" nav-nav-navigate-show-missing-paths "*Missing paths*")
               ("<f12>" nav-nav-navigate-show-free-keys "*Free keys*")
               )))))
 
-(defun nav-nav-commands-from-path-raw (path)
-  (let* ((str-commands (get-string-from-file path))
-         (commands-raw (cadr (read str-commands))))
-    commands-raw))
-
-(defun nav-nav-commands-from-path (path)
-  (let* ((commands-raw (nav-nav-commands-from-path-raw path))
-         (commands (--map (apply 'cons (cl-subseq it 0 2)) commands-raw)))
-    commands))
-
-(defun nav-nav-navigate-helm (shell-go switch) 
+(defun nav-nav-navigate-helm (arg switch)
   (interactive)
-  (flet ((open (x) (nav-nav-navigate-callback (cadr (s-split-up-to " " x 1)) shell-go switch)))
-    (let ((paths (--map (format "%s %s" (car it) (cdr it)) (nav-nav-commands-from-path nav-items-file))))
-      (helm :sources (helm-build-sync-source "nav-nav:"
-                       :candidates paths
-                       :action '(("Open" . open)))))))
+  (let* ((open #'(lambda (x)
+                   (let* ((kv (s-split-up-to " " x 1)))
+                     (nav-nav-navigate-callback (car kv) (cadr kv) arg switch))))
+         (commands (nav-nav-paths nav-nav-file))
+         (paths (--map (format "%s %s" (car it) (cadr it)) commands))
+         (res (helm :sources (helm-build-sync-source "nav-nav:"
+                               :candidates paths
+                               :action `(("Open" . ,open)))))
+         ) res))
 
-(defun nav-nav-navigate-callback (path shell-go switch-layout)
+(defun nav-nav-cur-buffer-path ()
+  (if (equal major-mode 'dired-mode)
+      default-directory
+    (buffer-file-name)))
+
+(defun nav-nav-navigate-callback (key path arg switch-layout)
   (interactive)
-  (if shell-go
-      (let ((directory 
-             (if (file-directory-p path) 
-                 path
-               (file-name-directory path))))
-        (insert (concat "cd " directory))
-        (comint-send-input))
-    (cond
-     ((string-prefix-p "*" path) (switch-to-buffer path))
-     (t (progn
-          (find-file path)
-          (eq major-mode 'emacs-lisp-mode)
-          (if (eq major-mode 'dired-mode) (revert-buffer))))))
-  (if switch-layout (nav-nav-next-layout))
-  (nav-nav-update-entry-by-path path))
+  (let* ((callback (alist-get arg nav-nav-actions-map nav-nav-default-action)))
+    (funcall callback path)
+    (if switch-layout (nav-nav-next-layout))
+    (nav-nav-update-entry-by-key key #'nav-nav-update-access-time)))
 
-(defun nav-nav-patch-entry (str-entry)
-  (let* ((entry (read str-entry))
-         (time (format-time-string "%Y-%m-%dT%H:%M" (current-time)))
-         (new-entry (append (cl-subseq entry 0 2) `(,time))))
-    (concat " " (prin1-to-string new-entry))))
+(defun nav-nav-update-access-time (entry)
+  (let* ((ctime (current-time))
+         (stime (format-time-string "%Y-%m-%dT%H:%M" ctime))
+         (res (list (car entry) (cadr entry) stime))
+         ) res))
 
-(defun nav-nav-update-entry-by-path (path)
-  (let* ((str-commands (get-string-from-file nav-items-file))
-         (regexp (format "^.*%s.*$" path))
-         (entry-match (s-match regexp str-commands)))
-    (if entry-match
-        (let* ((old-entry (car entry-match))
-               (new-entry (nav-nav-patch-entry old-entry))
-               (new-str-commands (replace-regexp-in-string old-entry new-entry str-commands))
-               (new-commands-0 (prin1-to-string new-str-commands))
-               (len (length new-commands-0))
-               (new-commands-1 (substring-no-properties new-commands-0 1 (1- len)))
-               (new-commands (s-replace "\\\"" "\"" new-commands-1)))
-          (with-temp-file nav-items-file
-            (insert new-commands))))))
+(defun nav-nav-update-path (key new-path)
+  (nav-nav-update-entry-by-key
+   key
+   (lambda (entry)
+     (list (car entry) new-path))))
+
+(defun nav-nav-update-entry-by-key (key callback)
+  (let* ((commands (nav-nav-paths nav-nav-file))
+         (eq-predicate (lambda (e) (equal (car e) key)))
+         (paths-upd (-map-when eq-predicate callback commands))
+         (paths-parts (--map (format " %S" it) paths-upd))
+         (str-paths-upd (s-concat "(\n" (s-join "\n" paths-parts) "\n)")))
+    (with-temp-file nav-nav-file
+      (insert str-paths-upd))))
 
 (defun nav-nav-navigate-show-free-keys ()
   (interactive)
-  (let* ((str-commands (get-string-from-file nav-items-file))
-         (commands-raw (cadr (read str-commands)))
-         (used-keys (--filter (not (equal it ".")) (-map #'car commands-raw)))
+  (let* ((commands (nav-nav-paths nav-nav-file))
+         (used-keys (--filter (not (equal it ".")) (-map #'car commands)))
          (free-keys (--filter (not (-contains? used-keys it)) nav-nav-all-keys)))
     (message "free keys: %s" free-keys)))
 
 (defun nav-nav-navigate-show-missing-paths ()
   (interactive)
-  (let* ((str-commands (get-string-from-file nav-items-file))
-         (commands-raw (cadr (read str-commands)))
-         (missing-commands (--filter (not (file-exists-p (cadr it))) commands-raw))
-         (joined-missing-commands (s-join "\n" (-map 'prin1-to-string missing-commands))))
-    (message "Missing paths:\n%s" joined-missing-commands)))
+  (let* ((commands (nav-nav-paths nav-nav-file))
+         (missing-commands (--filter (not (file-exists-p (cadr it))) commands))
+         (joined-missing-commands (s-join "\n" (-map 'prin1-to-string missing-commands)))
+         (path-msg (if missing-commands
+                       (format "Missing paths:\n%s" joined-missing-commands)
+                     "No missing paths")))
+    (message path-msg)))
+
+(defun nav-nav-sort-by-access ()
+  (interactive)
+  (let* ((paths (nav-nav-paths nav-nav-file)Б)
+         (commands-sorted (-sort (-on #'string-lessp #'caddr) paths))
+         (commands-sorted-str (--map (format "%s" it) commands-sorted)))
+    (helm :sources (helm-build-sync-source "nav-nav (sorted by access):"
+                     :candidates commands-sorted-str))))
 
 ;; reverse-im doesn't work with hydra :(
 ;; https://github.com/a13/reverse-im.el/issues/17
 (defun nav-nav-is-en-layout ()
-  (equal (shell-command-to-string "xkblayout-state print %s") nav-nav-en-layout))
+  (condition-case nil
+      (equal (shell-command-to-string "xkblayout-state print %s") nav-nav-en-layout)
+    (error t)))
 
 (defun nav-nav-next-layout ()
   (shell-command-to-string "xkblayout-state set +1"))
